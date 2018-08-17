@@ -77,14 +77,14 @@ def getServiceAccountCredentials(){
 	gitMessage = sh(script: "(cd ${microservicePath} && git show -s --format='%h %s%+b' ${gitCommit})", returnStdout: true).trim()
 	print "Git Commit Info:: \nCommit Message: ${gitMessage}\nGit Commit SHA: ${gitCommit}"
 
-	withCredentials([[$class: 'StringBinding', credentialsId: 'system-serviceaccount-jenkins-cts-ups-develop',
+	withCredentials([[$class: 'StringBinding', credentialsId: 'dev-ops-cicd-service-account',
 		variable: 'authToken']]) {
 		ocClusterAuthToken = authToken
 	}
 
 	// Define common file paths for infrastructure as code templates
-	deployTemplatePath = "${microservicePath}/infrastructure/ocp-templates/cts-ups-dotnet-deploy-template.json"
-	buildTemplatePath = "${microservicePath}/infrastructure/ocp-templates/cts-ups-dotnet-build-template.json"
+	buildTemplatePath = "${microservicePath}/cicd/templates/build/dot-net-app-build-template.json"
+	deployTemplatePath = "${microservicePath}/cicd/templates/build/dot-net-app-deploy-template.json"
 }
 
 /**
@@ -381,21 +381,22 @@ def login(String apiURL, String authToken) {
  */
 def gitCheckout(String workspace, String url, String branch, String commit,
 		String targetDir, String credentialsId) {
+	projectDir = ${workspace}/${targetDir}
 	sh """
 		# Ensure the targetDir is deleted before we clone
-		rm -rf ${workspace}/${targetDir}
+		rm -rf ${projectDir}
 		git clone -b ${branch} ${url} ${targetDir}
-		cd ${workspace}/${targetDir}
+		cd ${projectDir}
 		git reset --hard ${commit}
 		cd ${workspace}
 		echo `pwd && ls -l`
 	"""
 
 	try {
-		def deployTemplateInput = readJSON file: "${workspace}/${targetDir}/infrastructure/ocp-templates/cts-ups-dotnet-deploy-template.json"
+		def deployTemplateInput = readJSON file: "${projectDir}/cicd/templates/deploy/dot-net-app-deploy-template.json"
 		if (deployTemplateInput["objects"][0]["kind"] == "ImageStream") {
 			deployTemplateInput["objects"].remove(0)
-			writeJSON file: "${workspace}/${targetDir}/infrastructure/ocp-templates/cts-ups-dotnet-deploy-template.json",
+			writeJSON file: "${projectDir}/cicd/templates/deploy/dot-net-deploy-template.json",
 					json: deployTemplateInput
 		}
 	} catch (e) {
