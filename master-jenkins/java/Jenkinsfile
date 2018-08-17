@@ -1,0 +1,436 @@
+import java.text.SimpleDateFormat
+import org.apache.commons.lang3.time.DateUtils
+
+// OC tool path
+ocToolPath = env.OC_TOOL_PATH
+
+// Instantiate cluster API URLs
+ocClusterUrl = env.OC_CLUSTER_URL
+
+// Instantiate docker registry urls
+ocRegistryUrl = env.OC_REGISTRY_URL
+
+// Declare auth tokens for later instantiation via credentials plugin
+ocClusterAuthToken = null
+
+// Declare OpenShift project names
+projectDev = "${application}-dev"
+projectInt = "${application}-integration"
+
+// Declare workspace directory
+workspace = null
+
+// Instantiate Git Commit Message
+gitMessage = ""
+
+// Instantiate Git Commit Sha
+gitCommit = ""
+
+// Declare the stages
+stageName = null
+
+def main() {
+	node() {
+		print "Prepare for build, get service account details, templates etc.."
+		getServiceAccountCredentials()
+
+		// Build into the develop OpenShift project
+		stage('Build and Unit Test in Develop') {
+			stageName = 'OpenShift Development'
+
+			// Time to start the main pipeline.
+			print "Build and Unit Test in Develop"
+			try {
+				buildAndUnitTestInDev(ocClusterUrl, ocClusterAuthToken)
+			} catch (exception) {
+				print "Build Failure: ${exception}"
+			}
+		} // stage
+	} // node
+
+	print "Promote to Integration"
+	node() {
+		// Build into the Integration OpenShift project
+		stage('Promote to Integration') {
+			stageName = 'OpenShift Integration'
+			promoteIntraCluster(microservice, projectDev, 'latest', projectInt, 'latest',
+				ocClusterUrl, ocClusterAuthToken)
+			openshiftTag(namespace: projectInt, sourceStream: microservice, sourceTag: 'latest',
+				destinationNamespace: projectInt, destinationStream: microservice,
+				destinationTag: versionNumber, apiURL: ocClusterUrl, authToken: ocClusterAuthToken)
+		} // stage
+	} // node
+} // main()
+
+/**
+ * Gets the git commit, git commit message, openshift cluster authetication token,
+ * build template path and the depoy template path.
+ */
+def getServiceAccountCredentials(){
+	// Workspace must be set before getLatestGitCommit can be called
+	workspace = pwd()
+	microservicePath = "${workspace}/${microservice}"
+	gitCommit = getLatestGitCommit(workspace, gitURL, gitBranch, microservice, gitCredentialsId)
+	gitMessage = sh(script: "(cd ${microservicePath} && git show -s --format='%h %s%+b' ${gitCommit})", returnStdout: true).trim()
+	print "Git Commit Info:: \nCommit Message: ${gitMessage}\nGit Commit SHA: ${gitCommit}"
+
+	withCredentials([[$class: 'StringBinding', credentialsId: 'system-serviceaccount-jenkins-cts-ups-develop',
+		variable: 'authToken']]) {
+		ocClusterAuthToken = authToken
+	}
+
+	// Define common file paths for infrastructure as code templates
+	deployTemplatePath = "${workspace}/${microservice}/infrastructure/ocp-templates/cts-ups-deploy-template.json"
+	buildTemplatePath = "${workspace}/${microservice}/infrastructure/ocp-templates/cts-ups-build-template.json"
+}
+
+/**
+ * Gets the latest short commit sha1 hash from the given Git repository
+ *
+ * @param String workspace     Path of the working directory to use
+ * @param String url           URL of the Git repository
+ * @param String branch        Branch to checkout
+ * @param String targetDir     Target directory in the Git repository to clone
+ * @param String credentialsId Id of the Git credentials to use
+ * @return String containing the latest short commit sha1 of the given repository and branch
+ */
+String getLatestGitCommit(String workspace, String url, String branch, String targetDir, String credentialsId) {
+	String tester = "Ram"
+	sh """
+		# Added the 1 line of code below to test
+		echo "testing The Tester: ${tester}"
+		# Ensure the targetDir is deleted before we clone
+		rm -rf ${workspace}/${targetDir}
+		git clone -b ${branch} ${url} ${targetDir}
+	"""
+
+	// Get the long commit sha1
+	String longCommit = sh(
+		script: """
+			cd ${workspace}/${targetDir}
+			git rev-parse HEAD
+			cd ${workspace}
+		""", returnStdout: true)
+
+	// Take first 6 characters of the commit sha1
+	return longCommit.substring(0, 6)
+}
+
+/**
+ * Builds and unit tests the microservice image in the develop project
+ *
+ * @param String ocClusterUrl		API URL of the cluster that the project exists in
+ * @param String ocClusterAuthToken	Auth token to use to authenticate against the cluster
+ */
+def buildAndUnitTestInDev(String ocClusterUrl, String ocClusterAuthToken) {
+	print "----------------------------------------------------------------------------------------"
+	print "                               Build and Unit Test in Develop                           "
+	print "----------------------------------------------------------------------------------------"
+	try {
+		// Apply the objects
+		print "Create the initial required resources for the application to build..."
+		applyOCPObjects(microservice, projectDev, ocClusterUrl, ocClusterAuthToken,
+			true, deployCPURequest , deployMemRequest, deployMemLimit)
+
+		sh "${ocToolPath} cancel-build bc/${microservice} -n ${projectDev}"
+
+		print "Starting build..."
+
+		openshiftBuild(namespace: projectDev, buildConfig: microservice,
+			showBuildLogs: 'true', waitTime: buildWaitTime, waitUnit: 'sec',
+			apiURL: ocClusterUrl, authToken: ocClusterAuthToken)
+
+		print "Build completed!"
+
+		print "Tag the image to openshift registry"
+		openshiftTag(namespace: projectDev, sourceStream: microservice,
+			sourceTag: 'latest', destinationNamespace: projectDev,
+			destinationStream: microservice, destinationTag: versionNumber,
+			apiURL: ocClusterUrl, authToken: ocClusterAuthToken)
+		print "Tagging completed!!!"
+	} catch (e) {
+		error("Build failed.")
+		currentBuild.result = 'FAILURE'
+		currentBuild.description = "${e}"
+	} finally {
+		print "Current Build Result: ${currentBuild.result}, Build Message: ${currentBuild.description}"
+		if (currentBuild.result != 'FAILURE') {
+			// verify deployment
+			print "Verify the deployment and check the Pod logs"
+			verifyDeploymentAndOutputPodLogs(microservice, projectDev, numReplicas,
+				deploymentWaitTime, ocClusterUrl, ocClusterAuthToken)
+			print "Verification of deployment completed!!!"
+		}
+	}
+}
+
+/**
+ * Uses `oc apply` to create or update OCP objects processed from templates stored in
+ * the infra/ocp-templates directory
+ *
+ * @param String microservice      	Name of the microservice
+ * @param String project           	Project to apply the processed template to
+ * @param String apiURL            	API URL of the cluster that the project exists in
+ * @param String authToken         	Auth token to use to authenticate against the cluster
+ * @param boolean createBuildConfig	Flag to decide whether to create a build config
+ */
+def applyOCPObjects(String microservice, String project, String apiURL, String authToken,
+		boolean createBuildConfig, String deployCPURequest, String deployMemRequest,
+		String deployMemLimit) {
+	// Checkout the code
+	gitCheckout(workspace, gitURL, gitBranch, gitCommit, microservice, gitCredentialsId)
+
+	// login to the project's cluster
+	login(apiURL, authToken)
+
+	try {
+		sh """
+			${ocToolPath} project ${project}
+			${ocToolPath} get all
+			${ocToolPath} delete bc,dc,is,pods,services,routes -l application=${application}
+			${ocToolPath} create is ${microservice} -n ${project}
+			${ocToolPath} label is ${microservice} microservice=${microservice}\
+				application=${application} cmdb=${applicationId} -n ${project}
+		"""
+	} catch (isError) {
+		print "Exception occurred: ${isError}"
+	}
+
+	// Process the microservice's template
+	try {
+		print "Applying OCP objects for ${microservice} in ${project}"
+		sh """
+			# Process the template and create resources
+			${ocToolPath} process -f ${deployTemplatePath} MICROSERVICE_NAME=${microservice}\
+				APPLICATION_NAME=${application} APPLICATION_ID=${applicationId}\
+				LIVENESS_DELAY=${livenessDelay} READINESS_DELAY=${readinessDelay}\
+				NUM_REPLICAS=${numReplicas} DEPLOY_MEM_LIMIT=${deployMemLimit}\
+				DEPLOY_CPU_LIMIT=${deployCPULimit} DEPLOY_MEM_REQUEST=${deployMemRequest}\
+				DEPLOY_CPU_REQUEST=${deployCPURequest} VERSION_NUMBER=${versionNumber}\
+				GIT_COMMIT=${gitCommit} -n ${project} | ${ocToolPath} apply -f - -n ${project}
+		"""
+	} catch (deployError) {
+		print "Exception while deploying: ${deployError}"
+		sh """
+			${ocToolPath} patch dc/${microservice}\
+				--patch '{"metadata":{"annotations":{"kubectl.kubernetes.io/last-applied-configuration":""}}}'\
+				-n ${project}
+			${ocToolPath} patch svc/${microservice}\
+				--patch '{"metadata":{"annotations":{"kubectl.kubernetes.io/last-applied-configuration":""}}}'\
+				-n ${project}
+			# Process the template and create resources
+			${ocToolPath} process -f ${deployTemplatePath} MICROSERVICE_NAME=${microservice}\
+				APPLICATION_NAME=${application} APPLICATION_ID=${applicationId}\
+				LIVENESS_DELAY=${livenessDelay} READINESS_DELAY=${readinessDelay}\
+				NUM_REPLICAS=${numReplicas} DEPLOY_MEM_LIMIT=${deployMemLimit}\
+				DEPLOY_CPU_LIMIT=${deployCPULimit} DEPLOY_MEM_REQUEST=${deployMemRequest}\
+				DEPLOY_CPU_REQUEST=${deployCPURequest} VERSION_NUMBER=${versionNumber}\
+				GIT_COMMIT=${gitCommit} -n ${project} | ${ocToolPath} apply -f - -n ${project}
+		"""
+	}
+
+	// If in Develop Project create the BuildConfig as well
+	print "createBuildConfig:: ${createBuildConfig}"
+	if (createBuildConfig) {
+		print "Inside If to apply build template"
+		sh """
+			${ocToolPath} process -f ${buildTemplatePath} MICROSERVICE_NAME=${microservice}\
+				APPLICATION_NAME=${application} APPLICATION_ID=${applicationId}\
+				GIT_REPO_URL=${gitURL} GIT_REPO_BRANCH=${gitBranch}\
+				GIT_CONTEXT_DIR=${gitContextDir} BUILD_MEM_LIMIT=${buildMemLimit}\
+				BUILD_CPU_LIMIT=${buildCPULimit} BUILD_MEM_REQUEST=${buildMemRequest}\
+				BUILD_CPU_REQUEST=${buildCPURequest} VERSION_NUMBER=${versionNumber}\
+				GIT_COMMIT=${gitCommit} -n ${project} | ${ocToolPath} apply -f - -n ${project}
+		"""
+	}
+	print "Objects applied!"
+}
+
+/**
+ * uses openshiftVerifyDeployment and some scripts to pull and show pod logs
+ *
+ * @param String microservice        	Name of the microservice
+ * @param String project             	Project to apply the processed template to
+ * @param String numReplicas         	number of replicas for microservice
+ * @param String deploymentWaitTime	time to wait for all replicas to start
+ * @param String clusterAPIURL       	Auth token to use to authenticate against the cluster
+ * @param boolean clusterAuthToken    	Flag to decide whether to create a build config
+ */
+def verifyDeploymentAndOutputPodLogs(microservice, project, numReplicas, deploymentWaitTime,
+	clusterAPIURL, clusterAuthToken) {
+	try {
+		print "Verify Deployment in ${project}"
+
+		openshiftVerifyDeployment(depCfg: microservice, namespace: project,
+			replicaCount: "${numReplicas}", verbose: 'false',
+			verifyReplicaCount: 'true', waitTime: "${deploymentWaitTime}",
+			apiURL: clusterAPIURL, authToken: clusterAuthToken)
+
+		print "Deployment to ${project} verified!"
+
+		print "Finding running pod for microservice ${microservice} in project ${project}"
+
+		// Look for Running pods
+		String podToCheck = sh (
+			script: """
+				${ocToolPath} get pods -l microservice=${microservice} -n ${project}\
+					| awk '/Running/' | awk 'NR==1{print \$1}'
+			""",
+			returnStdout: true)
+
+		podToCheckArray = podToCheck.split('\n')
+		podToCheck = podToCheckArray[0].trim()
+
+		print "Running pod ${podToCheck} found in project ${project}"
+		print "--------------------------------------------------------------------------------------------------------"
+		print "                                                Pod Logs"
+		print "--------------------------------------------------------------------------------------------------------"
+
+		sh """
+			${ocToolPath} logs pod/${podToCheck} -n ${project}
+		"""
+
+		print "--------------------------------------------------------------------------------------------------------"
+		print "                                              Warning Events"
+		print "--------------------------------------------------------------------------------------------------------"
+
+		sh """
+			${ocToolPath} get events -n ${project} | awk '\$7=="Warning"'
+		"""
+
+		print "--------------------------------------------------------------------------------------------------------"
+		print "                                              Error Events"
+		print "--------------------------------------------------------------------------------------------------------"
+
+		sh """
+			${ocToolPath} get events -n ${project} | awk '\$7=="Error"'
+		"""
+	} catch (Exception e) {
+		print "Error occurred while verifying deployment: ${e}"
+		print "Finding not ready pod for microservice ${microservice} in project ${project}"
+
+		// Look for not ready pods
+		String podToCheck = sh (
+			script: """
+				${ocToolPath} get pods -l microservice=${microservice} -n ${project}\
+					| awk '/0\\/1/' | awk 'NR==1{print \$1}'
+			""",
+			returnStdout: true
+		)
+		podToCheckArray = podToCheck.split('\n')
+		podToCheck = podToCheckArray[0].trim()
+
+		print "Not Ready pod ${podToCheck} found in project ${project}"
+		print "--------------------------------------------------------------------------------------------------------"
+		print "                                              Pod Logs"
+		print "--------------------------------------------------------------------------------------------------------"
+
+		sh """
+			${ocToolPath} logs pod/${podToCheck} -n ${project}
+		"""
+
+		print "--------------------------------------------------------------------------------------------------------"
+		print "                                              Warning Events"
+		print "--------------------------------------------------------------------------------------------------------"
+
+		sh """
+			${ocToolPath} get events -n ${project} | awk '\$7=="Warning"'
+		"""
+
+		print "--------------------------------------------------------------------------------------------------------"
+		print "                                              Error Events"
+		print "--------------------------------------------------------------------------------------------------------"
+
+		sh """
+			${ocToolPath} get events -n ${project} | awk '\$7=="Error"'
+		"""
+
+		currentBuild.result = 'FAILURE'
+		error("${microservice} failed to deploy in ${project}.")
+	}
+}
+
+/**
+ * Logs into an OCP cluster given an API URL and an Auth Token
+ * ** Must be run in a node that has the oc client**
+ *
+ * @param String apiURL		API URL of the target OCP cluster
+ * @param String authToken	Auth token to use for login
+ */
+def login(String apiURL, String authToken) {
+	sh """
+		set +x
+		${ocToolPath} login --insecure-skip-tls-verify=true --token=${authToken} --server=${apiURL} >/dev/null 2>&1 || echo 'OpenShift login failed'
+	"""
+}
+
+/**
+ * Clones and checks out the given Git repository branch and commit
+ *
+ * @param String workspace     	Path of the working directory to use
+ * @param String url           	URL of the Git repository
+ * @param String branch        	Branch to checkout
+ * @param String commit        	Short commit hash to set HEAD to
+ * @param String targetDir     	Target directory in the Git repository to clone
+ * @param String credentialsId	Id of the Git credentials to use (From the credentials plugin in Cloudbees)
+ */
+def gitCheckout(String workspace, String url, String branch, String commit,
+		String targetDir, String credentialsId) {
+	sh """
+		# Ensure the targetDir is deleted before we clone
+		rm -rf ${workspace}/${targetDir}
+		git clone -b ${branch} ${url} ${targetDir}
+		cd ${workspace}/${targetDir}
+		git reset --hard ${commit}
+		cd ${workspace}
+		echo `pwd && ls -l`
+	"""
+
+	try {
+		def deployTemplateInput = readJSON file: "${workspace}/${targetDir}/infrastructure/ocp-templates/cts-ups-deploy-template.json"
+		if (deployTemplateInput["objects"][0]["kind"] == "ImageStream") {
+			deployTemplateInput["objects"].remove(0)
+			writeJSON file: "${workspace}/${targetDir}/infrastructure/ocp-templates/cts-ups-deploy-template.json",
+					json: deployTemplateInput
+		}
+	} catch (e) {
+		print "Error while reading Deploy Template:: ${e}"
+	}
+}
+
+/**
+ * *** Must execute inside linux node block ***
+ * Promotes the Docker image and OCP objects for a given microservice from a source
+ * project to a destination project within an OCP cluster
+ *
+ * @param String microservice		Name of the microservice to promote
+ * @param String srcProject		Source project for the microservice image
+ * @param String destProject		Destination project that the microservice image and OCP
+ * 					objects should be moved to
+ * @param String clusterAPIURL		API URL of the cluster that both projects exist within
+ * @param String clusterAuthToken	Auth token to use to authenticate against the cluster
+ */
+def promoteIntraCluster(String microservice, String srcProject, String srcTag, String destProject,
+		String destTag, String clusterAPIURL, String clusterAuthToken) {
+	print "---------------------------------------------------------------------------------------------------"
+	print "                        Promoting from ${srcProject} to ${destProject}                             "
+	print "---------------------------------------------------------------------------------------------------"
+
+	// login to the project's cluster
+	login(clusterAPIURL, clusterAuthToken)
+
+	// Apply the processed template to the objects in the destination project
+	applyOCPObjects(microservice, destProject, clusterAPIURL, clusterAuthToken,
+		false, deployCPURequest , deployMemRequest, deployMemLimit)
+
+	print "Tagging ${microservice} image into ${destProject}"
+	openshiftTag(namespace: srcProject, sourceStream: microservice, sourceTag: srcTag,
+		destinationNamespace: destProject, destinationStream: microservice,
+		destinationTag: destTag, apiURL: clusterAPIURL, authToken: clusterAuthToken)
+
+	verifyDeploymentAndOutputPodLogs(microservice, destProject, numReplicas, deploymentWaitTime,
+		clusterAPIURL, clusterAuthToken)
+}
+
+// Return the entire class as a pipeline
+return this;
