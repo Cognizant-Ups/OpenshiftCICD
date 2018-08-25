@@ -100,7 +100,7 @@ String getLatestGitCommit(String workspace, String url, String branch, String ta
 		# Added the 1 line of code below to test
 		echo "testing The Tester: ${tester}"
 		# Ensure the targetDir is deleted before we clone
-		rm -rf ${workspace}/${targetDir}
+		rm -rf "${workspace}/${targetDir}"
 		git clone -b ${branch} ${url} ${targetDir}
 	"""
 
@@ -376,7 +376,7 @@ def login(String apiURL, String authToken) {
  */
 def gitCheckout(String workspace, String url, String branch, String commit,
 		String targetDir, String credentialsId) {
-	projectDir = ${workspace}/${targetDir}
+	projectDir = "${workspace}/${targetDir}"
 	sh """
 		# Ensure the targetDir is deleted before we clone
 		rm -rf ${projectDir}
