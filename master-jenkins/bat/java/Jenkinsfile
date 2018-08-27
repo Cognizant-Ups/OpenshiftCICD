@@ -96,11 +96,11 @@ def getServiceAccountCredentials(){
  */
 String getLatestGitCommit(String workspace, String url, String branch, String targetDir, String credentialsId) {
 	String tester = "Ram"
-	sh """
+	bat """
 		# Added the 1 line of code below to test
 		echo "testing The Tester: ${tester}"
 		# Ensure the targetDir is deleted before we clone
-		rm -rf "${workspace}/${targetDir}"
+		rmdir /S /Q "${workspace}/${targetDir}"
 		git clone -b ${branch} ${url} ${targetDir}
 	"""
 
@@ -184,12 +184,12 @@ def applyOCPObjects(String microservice, String project, String apiURL, String a
 	login(apiURL, authToken)
 
 	try {
-		sh """
+		bat """
 			${ocToolPath} project ${project}
 			${ocToolPath} get all
 			${ocToolPath} delete bc,dc,is,pods,services,routes -l application=${application}
 			${ocToolPath} create is ${microservice} -n ${project}
-			${ocToolPath} label is ${microservice} microservice=${microservice}\
+			${ocToolPath} label is ${microservice} microservice=${microservice}^
 				application=${application} cmdb=${applicationId} -n ${project}
 		"""
 	} catch (isError) {
@@ -199,32 +199,32 @@ def applyOCPObjects(String microservice, String project, String apiURL, String a
 	// Process the microservice's template
 	try {
 		print "Applying OCP objects for ${microservice} in ${project}"
-		sh """
+		bat """
 			# Process the template and create resources
-			${ocToolPath} process -f ${deployTemplatePath} MICROSERVICE_NAME=${microservice}\
-				APPLICATION_NAME=${application} APPLICATION_ID=${applicationId}\
-				LIVENESS_DELAY=${livenessDelay} READINESS_DELAY=${readinessDelay}\
-				NUM_REPLICAS=${numReplicas} DEPLOY_MEM_LIMIT=${deployMemLimit}\
-				DEPLOY_CPU_LIMIT=${deployCPULimit} DEPLOY_MEM_REQUEST=${deployMemRequest}\
-				DEPLOY_CPU_REQUEST=${deployCPURequest} VERSION_NUMBER=${versionNumber}\
+			${ocToolPath} process -f ${deployTemplatePath} MICROSERVICE_NAME=${microservice}^
+				APPLICATION_NAME=${application} APPLICATION_ID=${applicationId}^
+				LIVENESS_DELAY=${livenessDelay} READINESS_DELAY=${readinessDelay}^
+				NUM_REPLICAS=${numReplicas} DEPLOY_MEM_LIMIT=${deployMemLimit}^
+				DEPLOY_CPU_LIMIT=${deployCPULimit} DEPLOY_MEM_REQUEST=${deployMemRequest}^
+				DEPLOY_CPU_REQUEST=${deployCPURequest} VERSION_NUMBER=${versionNumber}^
 				GIT_COMMIT=${gitCommit} -n ${project} | ${ocToolPath} apply -f - -n ${project}
 		"""
 	} catch (deployError) {
 		print "Exception while deploying: ${deployError}"
-		sh """
-			${ocToolPath} patch dc/${microservice}\
-				--patch '{"metadata":{"annotations":{"kubectl.kubernetes.io/last-applied-configuration":""}}}'\
+		bat """
+			${ocToolPath} patch dc/${microservice}^
+				--patch '{"metadata":{"annotations":{"kubectl.kubernetes.io/last-applied-configuration":""}}}'^
 				-n ${project}
-			${ocToolPath} patch svc/${microservice}\
-				--patch '{"metadata":{"annotations":{"kubectl.kubernetes.io/last-applied-configuration":""}}}'\
+			${ocToolPath} patch svc/${microservice}^
+				--patch '{"metadata":{"annotations":{"kubectl.kubernetes.io/last-applied-configuration":""}}}'^
 				-n ${project}
 			# Process the template and create resources
-			${ocToolPath} process -f ${deployTemplatePath} MICROSERVICE_NAME=${microservice}\
-				APPLICATION_NAME=${application} APPLICATION_ID=${applicationId}\
-				LIVENESS_DELAY=${livenessDelay} READINESS_DELAY=${readinessDelay}\
-				NUM_REPLICAS=${numReplicas} DEPLOY_MEM_LIMIT=${deployMemLimit}\
-				DEPLOY_CPU_LIMIT=${deployCPULimit} DEPLOY_MEM_REQUEST=${deployMemRequest}\
-				DEPLOY_CPU_REQUEST=${deployCPURequest} VERSION_NUMBER=${versionNumber}\
+			${ocToolPath} process -f ${deployTemplatePath} MICROSERVICE_NAME=${microservice}^
+				APPLICATION_NAME=${application} APPLICATION_ID=${applicationId}^
+				LIVENESS_DELAY=${livenessDelay} READINESS_DELAY=${readinessDelay}^
+				NUM_REPLICAS=${numReplicas} DEPLOY_MEM_LIMIT=${deployMemLimit}^
+				DEPLOY_CPU_LIMIT=${deployCPULimit} DEPLOY_MEM_REQUEST=${deployMemRequest}^
+				DEPLOY_CPU_REQUEST=${deployCPURequest} VERSION_NUMBER=${versionNumber}^
 				GIT_COMMIT=${gitCommit} -n ${project} | ${ocToolPath} apply -f - -n ${project}
 		"""
 	}
@@ -233,13 +233,13 @@ def applyOCPObjects(String microservice, String project, String apiURL, String a
 	print "createBuildConfig:: ${createBuildConfig}"
 	if (createBuildConfig) {
 		print "Inside If to apply build template"
-		sh """
-			${ocToolPath} process -f ${buildTemplatePath} MICROSERVICE_NAME=${microservice}\
-				APPLICATION_NAME=${application} APPLICATION_ID=${applicationId}\
-				GIT_REPO_URL=${gitURL} GIT_REPO_BRANCH=${gitBranch}\
-				GIT_CONTEXT_DIR=${gitContextDir} BUILD_MEM_LIMIT=${buildMemLimit}\
-				BUILD_CPU_LIMIT=${buildCPULimit} BUILD_MEM_REQUEST=${buildMemRequest}\
-				BUILD_CPU_REQUEST=${buildCPURequest} VERSION_NUMBER=${versionNumber}\
+		bat """
+			${ocToolPath} process -f ${buildTemplatePath} MICROSERVICE_NAME=${microservice}^
+				APPLICATION_NAME=${application} APPLICATION_ID=${applicationId}^
+				GIT_REPO_URL=${gitURL} GIT_REPO_BRANCH=${gitBranch}^
+				GIT_CONTEXT_DIR=${gitContextDir} BUILD_MEM_LIMIT=${buildMemLimit}^
+				BUILD_CPU_LIMIT=${buildCPULimit} BUILD_MEM_REQUEST=${buildMemRequest}^
+				BUILD_CPU_REQUEST=${buildCPURequest} VERSION_NUMBER=${versionNumber}^
 				GIT_COMMIT=${gitCommit} -n ${project} | ${ocToolPath} apply -f - -n ${project}
 		"""
 	}
@@ -271,9 +271,9 @@ def verifyDeploymentAndOutputPodLogs(microservice, project, numReplicas, deploym
 		print "Finding running pod for microservice ${microservice} in project ${project}"
 
 		// Look for Running pods
-		String podToCheck = sh (
+		String podToCheck = bat(
 			script: """
-				${ocToolPath} get pods -l microservice=${microservice} -n ${project}\
+				${ocToolPath} get pods -l microservice=${microservice} -n ${project}^
 					| awk '/Running/' | awk 'NR==1{print \$1}'
 			""",
 			returnStdout: true)
@@ -286,7 +286,7 @@ def verifyDeploymentAndOutputPodLogs(microservice, project, numReplicas, deploym
 		print "                                                Pod Logs"
 		print "--------------------------------------------------------------------------------------------------------"
 
-		sh """
+		bat """
 			${ocToolPath} logs pod/${podToCheck} -n ${project}
 		"""
 
@@ -294,7 +294,7 @@ def verifyDeploymentAndOutputPodLogs(microservice, project, numReplicas, deploym
 		print "                                              Warning Events"
 		print "--------------------------------------------------------------------------------------------------------"
 
-		sh """
+		bat """
 			${ocToolPath} get events -n ${project} | awk '\$7=="Warning"'
 		"""
 
@@ -302,7 +302,7 @@ def verifyDeploymentAndOutputPodLogs(microservice, project, numReplicas, deploym
 		print "                                              Error Events"
 		print "--------------------------------------------------------------------------------------------------------"
 
-		sh """
+		bat """
 			${ocToolPath} get events -n ${project} | awk '\$7=="Error"'
 		"""
 	} catch (Exception e) {
@@ -310,9 +310,9 @@ def verifyDeploymentAndOutputPodLogs(microservice, project, numReplicas, deploym
 		print "Finding not ready pod for microservice ${microservice} in project ${project}"
 
 		// Look for not ready pods
-		String podToCheck = sh (
+		String podToCheck = bat(
 			script: """
-				${ocToolPath} get pods -l microservice=${microservice} -n ${project}\
+				${ocToolPath} get pods -l microservice=${microservice} -n ${project}^
 					| awk '/0\\/1/' | awk 'NR==1{print \$1}'
 			""",
 			returnStdout: true
@@ -325,7 +325,7 @@ def verifyDeploymentAndOutputPodLogs(microservice, project, numReplicas, deploym
 		print "                                              Pod Logs"
 		print "--------------------------------------------------------------------------------------------------------"
 
-		sh """
+		bat """
 			${ocToolPath} logs pod/${podToCheck} -n ${project}
 		"""
 
@@ -333,7 +333,7 @@ def verifyDeploymentAndOutputPodLogs(microservice, project, numReplicas, deploym
 		print "                                              Warning Events"
 		print "--------------------------------------------------------------------------------------------------------"
 
-		sh """
+		bat """
 			${ocToolPath} get events -n ${project} | awk '\$7=="Warning"'
 		"""
 
@@ -341,7 +341,7 @@ def verifyDeploymentAndOutputPodLogs(microservice, project, numReplicas, deploym
 		print "                                              Error Events"
 		print "--------------------------------------------------------------------------------------------------------"
 
-		sh """
+		bat """
 			${ocToolPath} get events -n ${project} | awk '\$7=="Error"'
 		"""
 
@@ -358,9 +358,9 @@ def verifyDeploymentAndOutputPodLogs(microservice, project, numReplicas, deploym
  * @param String authToken	Auth token to use for login
  */
 def login(String apiURL, String authToken) {
-	sh """
+	bat """
 		set +x
-		${ocToolPath} login --insecure-skip-tls-verify=true --token=${authToken} --server=${apiURL} >/dev/null 2>&1 || echo 'OpenShift login failed'
+		${ocToolPath} login --insecure-skip-tls-verify=true --token=${authToken} --server=${apiURL} > NUL 2>&1 || echo 'OpenShift login failed'
 	"""
 }
 
@@ -377,14 +377,14 @@ def login(String apiURL, String authToken) {
 def gitCheckout(String workspace, String url, String branch, String commit,
 		String targetDir, String credentialsId) {
 	projectDir = "${workspace}/${targetDir}"
-	sh """
+	bat """
 		# Ensure the targetDir is deleted before we clone
-		rm -rf ${projectDir}
+		rmdir /S /Q ${projectDir}
 		git clone -b ${branch} ${url} ${targetDir}
 		cd ${projectDir}
 		git reset --hard ${commit}
 		cd ${workspace}
-		echo `pwd && ls -l`
+		echo %cd% && dir /b
 	"""
 
 	try {
