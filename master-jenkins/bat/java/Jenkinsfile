@@ -71,7 +71,7 @@ def getServiceAccountCredentials(){
 	workspace = pwd()
 	microservicePath = "${workspace}/${microservice}"
 	gitCommit = getLatestGitCommit(workspace, gitURL, gitBranch, microservice, gitCredentialsId)
-	gitMessage = sh(script: "(cd ${microservicePath} && git show -s --format='%h %s%+b' ${gitCommit})", returnStdout: true).trim()
+	gitMessage = bat(script: "(cd ${microservicePath} && git show -s --format='%h %s%+b' ${gitCommit})", returnStdout: true).trim()
 	print "Git Commit Info:: \nCommit Message: ${gitMessage}\nGit Commit SHA: ${gitCommit}"
 
 	withCredentials([[$class: 'StringBinding', credentialsId: 'dev-ops-cicd-service-account',
@@ -105,7 +105,7 @@ String getLatestGitCommit(String workspace, String url, String branch, String ta
 	"""
 
 	// Get the long commit sha1
-	String longCommit = sh(
+	String longCommit = bat(
 		script: """
 			cd ${workspace}/${targetDir}
 			git rev-parse HEAD
@@ -132,7 +132,7 @@ def buildAndUnitTestInDev(String ocClusterUrl, String ocClusterAuthToken) {
 		applyOCPObjects(microservice, projectDev, ocClusterUrl, ocClusterAuthToken,
 			true, deployCPURequest , deployMemRequest, deployMemLimit)
 
-		sh "${ocToolPath} cancel-build bc/${microservice} -n ${projectDev}"
+		bat "${ocToolPath} cancel-build bc/${microservice} -n ${projectDev}"
 
 		print "Starting build..."
 
